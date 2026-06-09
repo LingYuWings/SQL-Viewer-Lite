@@ -1,0 +1,23 @@
+# SQL-Viewer Lite - Dependencies
+
+# GUI Framework
+PyQt5>=5.15.0
+
+# Database Driver
+PyMySQL>=1.0.0
+
+# Encryption (for password storage)
+pycryptodome>=3.15.0
+
+# SSH Tunnel (Phase 2 - SSH tunnel support)
+paramiko>=2.12.0
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Code Formatting
+black>=23.0.0
+
+# Type Checking (optional)
+mypy>=1.0.0
