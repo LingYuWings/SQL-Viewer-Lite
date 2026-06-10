@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QScrollArea,
     QPushButton,
     QLabel,
     QLineEdit,
@@ -126,6 +127,7 @@ class FilterWidget(QWidget):
     列筛选控件
 
     在表格上方显示，用于输入筛选条件。
+    支持多列筛选，使用 QScrollArea 防止拥挤。
     """
 
     # 信号：筛选条件变更
@@ -140,33 +142,59 @@ class FilterWidget(QWidget):
 
     def _init_ui(self):
         """初始化界面"""
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 4, 0, 4)
-        layout.setSpacing(8)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 4, 0, 4)
+        main_layout.setSpacing(0)
+
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setFixedHeight(40)
+        scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        # 内容容器
+        content_widget = QWidget()
+        content_layout = QHBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
 
         # 为每列创建筛选输入框
         for col in self._columns:
+            # 创建筛选组
+            filter_group = QWidget()
+            group_layout = QHBoxLayout(filter_group)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(4)
+
             label = QLabel(f"{col}:")
             label.setFixedWidth(80)
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            layout.addWidget(label)
+            label.setToolTip(col)
+            group_layout.addWidget(label)
 
             filter_input = QLineEdit()
             filter_input.setPlaceholderText("筛选...")
-            filter_input.setFixedWidth(120)
+            filter_input.setMinimumWidth(100)
+            filter_input.setMaximumWidth(150)
             filter_input.textChanged.connect(self._on_filter_changed)
-            layout.addWidget(filter_input)
+            group_layout.addWidget(filter_input)
 
             self._filters[col] = filter_input
+            content_layout.addWidget(filter_group)
 
         # 添加弹性空间
-        layout.addStretch()
+        content_layout.addStretch()
 
         # 清除筛选按钮
         clear_btn = QPushButton("清除筛选")
         clear_btn.setFixedWidth(80)
         clear_btn.clicked.connect(self._clear_filters)
-        layout.addWidget(clear_btn)
+        content_layout.addWidget(clear_btn)
+
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
 
     def _on_filter_changed(self):
         """筛选条件变更"""

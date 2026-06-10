@@ -31,7 +31,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
 )
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
-from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtGui import QIcon, QFont, QPixmap, QPainter, QColor
 
 from sql_viewer_lite.models.connection import ConnectionConfig
 from sql_viewer_lite.core.db_connection import get_db_connection, DatabaseConnection
@@ -82,7 +82,33 @@ class DatabaseTreeWidget(QWidget):
         self._db_connection = get_db_connection()
         self._all_items: List[Dict] = []  # 存储所有项目用于过滤
         
+        # 创建图标
+        self._db_icon = self._create_colored_icon("#4FC3F7", "🗄")  # 浅蓝色
+        self._table_icon = self._create_colored_icon("#81C784", "📋")  # 浅绿色
+        
         self._init_ui()
+    
+    @staticmethod
+    def _create_colored_icon(color: str, emoji: str) -> QIcon:
+        """创建带颜色的图标"""
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(QColor(0, 0, 0, 0))  # 透明背景
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 绘制圆形背景
+        painter.setBrush(QColor(color))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(1, 1, 14, 14)
+        
+        # 绘制中心点
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawEllipse(5, 5, 6, 6)
+        
+        painter.end()
+        
+        return QIcon(pixmap)
     
     def _init_ui(self):
         """初始化界面"""
@@ -118,6 +144,7 @@ class DatabaseTreeWidget(QWidget):
             # 创建数据库节点
             db_item = QTreeWidgetItem(self._tree)
             db_item.setText(0, db_name)
+            db_item.setIcon(0, self._db_icon)
             db_item.setData(0, Qt.UserRole, {"type": "database", "name": db_name})
             
             # 添加占位子节点（懒加载）
@@ -165,6 +192,7 @@ class DatabaseTreeWidget(QWidget):
                 # 创建表节点
                 table_item = QTreeWidgetItem(db_item)
                 table_item.setText(0, table_name)
+                table_item.setIcon(0, self._table_icon)
                 table_item.setData(0, Qt.UserRole, {
                     "type": "table",
                     "database": database,
@@ -367,6 +395,7 @@ class MainWindow(QMainWindow):
         self._tab_widget = QTabWidget()
         self._tab_widget.setTabsClosable(True)
         self._tab_widget.tabCloseRequested.connect(self._on_tab_close)
+        self._tab_widget.tabBar().installEventFilter(self)
         splitter.addWidget(self._tab_widget)
 
         # 设置分割器比例
@@ -525,6 +554,17 @@ class MainWindow(QMainWindow):
         if self._tab_widget.tabText(index) == "欢迎":
             return
         self._tab_widget.removeTab(index)
+
+    def eventFilter(self, obj, event):
+        """事件过滤器 - 处理中键关闭标签页"""
+        if obj == self._tab_widget.tabBar() and event.type() == QEvent.MouseButtonPress:
+            if event.button() == Qt.MiddleButton:
+                # 获取点击位置对应的标签索引
+                index = self._tab_widget.tabBar().tabAt(event.pos())
+                if index >= 0:
+                    self._on_tab_close(index)
+                    return True
+        return super().eventFilter(obj, event)
     
     def _on_new_connection(self):
         """新建连接"""
@@ -593,8 +633,19 @@ def main():
     """主函数"""
     logger.info("启动 SQL-Viewer Lite")
 
+    # 启用高 DPI 缩放（必须在 QApplication 创建之前）
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     # 创建应用
     app = QApplication(sys.argv)
+
+    # 设置默认字体（启用抗锯齿）
+    default_font = QFont("Microsoft YaHei", 10)
+    default_font.setStyleHint(QFont.SansSerif)
+    default_font.setHintingPreference(QFont.PreferFullHinting)
+    app.setFont(default_font)
+
     app.setApplicationName("SQL-Viewer Lite")
     app.setApplicationVersion("0.1.0")
     app.setOrganizationName("SQL-Viewer Lite")
