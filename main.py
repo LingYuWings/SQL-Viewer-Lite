@@ -40,6 +40,7 @@ from sql_viewer_lite.ui.table_view import DataTableView
 from sql_viewer_lite.ui.table_structure import TableStructureView, TableInfoView
 from sql_viewer_lite.ui.sql_editor import create_sql_dock_widget
 from sql_viewer_lite.utils.theme_manager import get_theme_manager, THEMES
+from sql_viewer_lite.utils.shortcuts import register_app_shortcuts
 
 
 # 配置日志
@@ -607,6 +608,9 @@ def main():
     
     # 同步主题菜单状态
     window._update_theme_menu_state(theme_manager.current_theme)
+    
+    # 注册键盘快捷键
+    register_app_shortcuts(window)
     
     window.show()
 

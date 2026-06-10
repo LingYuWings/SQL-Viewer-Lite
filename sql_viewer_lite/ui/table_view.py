@@ -2,6 +2,7 @@
 数据表格视图组件
 
 提供数据表格展示、分页、排序、筛选、编辑功能。
+使用 VirtualTableView + DataTableModel 实现虚拟滚动。
 """
 
 import logging
@@ -12,22 +13,20 @@ from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QTableWidget,
-    QTableWidgetItem,
     QPushButton,
     QLabel,
     QLineEdit,
     QSpinBox,
     QComboBox,
-    QHeaderView,
     QMessageBox,
-    QProgressBar,
     QSizePolicy,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QColor, QBrush
 
 from sql_viewer_lite.core.db_connection import get_db_connection, QueryError
+from sql_viewer_lite.ui.virtual_table_view import VirtualTableView
+from sql_viewer_lite.ui.data_table_model import DataTableModel
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +361,7 @@ class DataTableView(QWidget):
     数据表格视图
 
     提供数据表格展示、分页、排序、筛选、编辑功能。
+    使用 VirtualTableView + DataTableModel 实现虚拟滚动。
     """
 
     def __init__(self, database: str, table: str, parent=None):
@@ -380,7 +380,7 @@ class DataTableView(QWidget):
 
         # 编辑状态
         self._diff_tracker = DiffTracker()
-        self._original_data: List[Dict[str, Any]] = []  # 原始数据备份
+        self._original_data: Dict[int, Dict[str, Any]] = {}  # 原始数据备份 {row: data}
 
         self._init_ui()
         self._load_primary_key()
@@ -456,20 +456,10 @@ class DataTableView(QWidget):
         # 筛选控件（初始隐藏，加载列后显示）
         self._filter_widget = None
 
-        # 表格
-        self._table_widget = QTableWidget()
-        self._table_widget.setAlternatingRowColors(True)
-        self._table_widget.setSelectionBehavior(QTableWidget.SelectRows)
-        self._table_widget.setEditTriggers(
-            QTableWidget.DoubleClicked | QTableWidget.SelectedClicked
-        )
-        self._table_widget.horizontalHeader().setStretchLastSection(True)
-        self._table_widget.verticalHeader().setDefaultSectionSize(32)
-        self._table_widget.horizontalHeader().sectionClicked.connect(
-            self._on_column_header_clicked
-        )
-        self._table_widget.cellChanged.connect(self._on_cell_changed)
-        layout.addWidget(self._table_widget)
+        # 表格（使用 VirtualTableView）
+        self._table_view = VirtualTableView()
+        self._table_view.scroll_to_bottom.connect(self._on_scroll_to_bottom)
+        layout.addWidget(self._table_view)
 
         # 分页控件
         self._pagination = PaginationWidget()
@@ -513,6 +503,7 @@ class DataTableView(QWidget):
 
         self._is_loading = True
         self._loading_label.show()
+        self._table_view.set_loading(True)
 
         try:
             # 构建 SQL
@@ -528,10 +519,12 @@ class DataTableView(QWidget):
                     self._setup_columns()
 
                 # 备份原始数据
-                self._original_data = [row.copy() for row in result]
+                offset = self._pagination.get_offset()
+                for i, row_data in enumerate(result):
+                    self._original_data[offset + i] = row_data.copy()
 
                 # 填充数据
-                self._fill_data(result)
+                self._fill_data(result, offset)
 
                 # 清除差异追踪
                 self._diff_tracker.clear()
@@ -546,6 +539,7 @@ class DataTableView(QWidget):
         finally:
             self._is_loading = False
             self._loading_label.hide()
+            self._table_view.set_loading(False)
 
     def _build_query(self) -> str:
         """构建查询 SQL"""
@@ -577,8 +571,7 @@ class DataTableView(QWidget):
 
     def _setup_columns(self):
         """设置表格列"""
-        self._table_widget.setColumnCount(len(self._columns))
-        self._table_widget.setHorizontalHeaderLabels(self._columns)
+        self._table_view.set_columns(self._columns)
 
         # 创建筛选控件
         if self._filter_widget:
@@ -591,66 +584,26 @@ class DataTableView(QWidget):
         layout = self.layout()
         layout.insertWidget(1, self._filter_widget)
 
-    def _fill_data(self, data: List[Dict[str, Any]]):
+    def _fill_data(self, data: List[Dict[str, Any]], start_index: int):
         """填充表格数据"""
-        # 暂时断开信号以避免触发编辑事件
-        self._table_widget.blockSignals(True)
+        self._table_view.set_data(data, self._total_rows, start_index)
 
-        self._table_widget.setRowCount(len(data))
-
-        for row_idx, row_data in enumerate(data):
-            for col_idx, col_name in enumerate(self._columns):
-                value = row_data.get(col_name, "")
-
-                # 转换为字符串显示
-                if value is None:
-                    display_value = "NULL"
-                else:
-                    display_value = str(value)
-
-                item = QTableWidgetItem(display_value)
-                item.setData(Qt.UserRole, value)  # 存储原始值
-
-                # NULL 值特殊显示
-                if value is None:
-                    item.setForeground(QColor("#808080"))
-                    item.setFont(QFont("Microsoft YaHei", 10, QFont.StyleItalic))
-
-                self._table_widget.setItem(row_idx, col_idx, item)
-
-        # 恢复信号
-        self._table_widget.blockSignals(False)
-
-    def _on_cell_changed(self, row: int, column: int):
-        """单元格内容变更"""
-        if row >= len(self._original_data) or column >= len(self._columns):
+    def _on_cell_changed(self, row: int, column: int, old_value: Any, new_value: Any):
+        """单元格内容变更（通过模型信号）"""
+        if column >= len(self._columns):
             return
 
         col_name = self._columns[column]
-        item = self._table_widget.item(row, column)
-        if not item:
-            return
+        original_value = self._original_data.get(row, {}).get(col_name)
 
-        new_value = item.text()
-        original_value = self._original_data[row].get(col_name, "")
-
-        # 转换类型比较
-        if original_value is None:
-            original_display = "NULL"
-        else:
-            original_display = str(original_value)
-
-        if new_value != original_display:
+        if new_value != original_value:
             # 记录修改
             self._diff_tracker.add_modification(
                 row, col_name, original_value, new_value
             )
-            # 高亮显示
-            item.setBackground(EDITED_COLOR)
         else:
             # 恢复原样
             self._diff_tracker.modified_cells.pop((row, col_name), None)
-            item.setBackground(QBrush())  # 清除背景
 
         self._update_edit_status()
 
@@ -693,6 +646,11 @@ class DataTableView(QWidget):
         self._load_total_rows()
         self._load_data()
 
+    def _on_scroll_to_bottom(self):
+        """滚动到底部（懒加载触发）"""
+        # 当前使用分页模式，此方法保留用于未来无限滚动
+        pass
+
     def _on_refresh(self):
         """刷新数据"""
         if self._diff_tracker.has_changes():
@@ -714,34 +672,21 @@ class DataTableView(QWidget):
         if not self._columns:
             return
 
-        # 在表格末尾添加新行
-        row_count = self._table_widget.rowCount()
-        self._table_widget.blockSignals(True)
-        self._table_widget.insertRow(row_count)
-
-        # 初始化新行
-        for col_idx, col_name in enumerate(self._columns):
-            item = QTableWidgetItem("")
-            item.setData(Qt.UserRole, None)
-            item.setBackground(NEW_ROW_COLOR)
-            self._table_widget.setItem(row_count, col_idx, item)
-
-        self._table_widget.blockSignals(False)
+        # 通过模型添加新行
+        new_row = self._table_view.model.add_new_row()
 
         # 记录新增行
-        self._diff_tracker.add_new_row(row_count)
+        self._diff_tracker.add_new_row(new_row)
 
         # 滚动到新行
-        self._table_widget.scrollToBottom()
+        self._table_view.scroll_to_row(new_row)
 
         self._update_edit_status()
-        logger.info(f"新增行: {row_count}")
+        logger.info(f"新增行: {new_row}")
 
     def _on_delete_row(self):
         """删除选中行"""
-        selected_rows = set()
-        for item in self._table_widget.selectedItems():
-            selected_rows.add(item.row())
+        selected_rows = self._table_view.get_selected_rows()
 
         if not selected_rows:
             QMessageBox.warning(self, "提示", "请先选择要删除的行")
@@ -759,15 +704,9 @@ class DataTableView(QWidget):
             return
 
         # 标记删除
-        for row in sorted(selected_rows, reverse=True):
+        for row in selected_rows:
             self._diff_tracker.mark_deleted(row)
-
-            # 高亮显示删除的行
-            for col_idx in range(self._table_widget.columnCount()):
-                item = self._table_widget.item(row, col_idx)
-                if item:
-                    item.setBackground(DELETED_COLOR)
-                    item.setForeground(QColor("#808080"))
+            self._table_view.model.mark_deleted(row)
 
         self._update_edit_status()
         logger.info(f"标记删除 {len(selected_rows)} 行")
@@ -786,7 +725,7 @@ class DataTableView(QWidget):
 
             # 处理删除
             for row_idx in self._diff_tracker.deleted_rows:
-                if row_idx < len(self._original_data):
+                if row_idx in self._original_data:
                     where_clause = self._build_where_clause(
                         self._original_data[row_idx]
                     )
@@ -804,7 +743,7 @@ class DataTableView(QWidget):
 
                 # 获取该行所有修改
                 row_diffs = self._diff_tracker.get_modifications_for_row(row)
-                if row_diffs and row < len(self._original_data):
+                if row_diffs and row in self._original_data:
                     set_clauses = []
                     for d in row_diffs:
                         if d.new_value == "NULL":
@@ -825,21 +764,20 @@ class DataTableView(QWidget):
                 if row_idx in self._diff_tracker.deleted_rows:
                     continue
 
-                # 收集该行的数据
-                values = {}
-                for col_idx, col_name in enumerate(self._columns):
-                    item = self._table_widget.item(row_idx, col_idx)
-                    if item:
-                        value = item.text()
-                        if value != "NULL" and value:
+                # 从模型获取该行数据
+                row_data = self._table_view.model.get_row_data(row_idx)
+                if row_data:
+                    values = {}
+                    for col_name, value in row_data.items():
+                        if value is not None and value != "":
                             values[col_name] = value
 
-                if values:
-                    columns_str = ", ".join([f"`{k}`" for k in values.keys()])
-                    values_str = ", ".join([f"'{v}'" for v in values.values()])
-                    sql = f"INSERT INTO `{self._database}`.`{self._table}` ({columns_str}) VALUES ({values_str})"
-                    sql_statements.append(sql)
-                    self._db_connection.execute_query(sql, fetch=False)
+                    if values:
+                        columns_str = ", ".join([f"`{k}`" for k in values.keys()])
+                        values_str = ", ".join([f"'{v}'" for v in values.values()])
+                        sql = f"INSERT INTO `{self._database}`.`{self._table}` ({columns_str}) VALUES ({values_str})"
+                        sql_statements.append(sql)
+                        self._db_connection.execute_query(sql, fetch=False)
 
             # 提交事务
             self._db_connection.commit()
