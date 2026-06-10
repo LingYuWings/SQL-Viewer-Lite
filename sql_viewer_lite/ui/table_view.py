@@ -26,6 +26,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QColor, QBrush
 
 from sql_viewer_lite.core.db_connection import get_db_connection, QueryError
+from sql_viewer_lite.core.db_worker import ProcessWorker, get_worker_manager
 from sql_viewer_lite.ui.virtual_table_view import VirtualTableView
 from sql_viewer_lite.ui.data_table_model import DataTableModel
 
@@ -139,11 +140,12 @@ class FilterWidget(QWidget):
         self._filters: Dict[str, QLineEdit] = {}
 
         self._init_ui()
+        self.setFixedHeight(36)
 
     def _init_ui(self):
         """初始化界面"""
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 4, 0, 4)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
         # 创建滚动区域
@@ -151,14 +153,22 @@ class FilterWidget(QWidget):
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setFixedHeight(40)
-        scroll_area.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll_area.setFixedHeight(32)
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background: transparent;
+            }
+            QScrollBar:horizontal {
+                height: 8px;
+            }
+        """)
 
         # 内容容器
         content_widget = QWidget()
         content_layout = QHBoxLayout(content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(8)
+        content_layout.setContentsMargins(4, 2, 4, 2)
+        content_layout.setSpacing(6)
 
         # 为每列创建筛选输入框
         for col in self._columns:
@@ -166,18 +176,17 @@ class FilterWidget(QWidget):
             filter_group = QWidget()
             group_layout = QHBoxLayout(filter_group)
             group_layout.setContentsMargins(0, 0, 0, 0)
-            group_layout.setSpacing(4)
+            group_layout.setSpacing(2)
 
-            label = QLabel(f"{col}:")
-            label.setFixedWidth(80)
+            label = QLabel(f"{col[:15]}{'...' if len(col) > 15 else ''}:")
+            label.setFixedWidth(100)
             label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             label.setToolTip(col)
             group_layout.addWidget(label)
 
             filter_input = QLineEdit()
             filter_input.setPlaceholderText("筛选...")
-            filter_input.setMinimumWidth(100)
-            filter_input.setMaximumWidth(150)
+            filter_input.setFixedWidth(100)
             filter_input.textChanged.connect(self._on_filter_changed)
             group_layout.addWidget(filter_input)
 
@@ -189,7 +198,8 @@ class FilterWidget(QWidget):
 
         # 清除筛选按钮
         clear_btn = QPushButton("清除筛选")
-        clear_btn.setFixedWidth(80)
+        clear_btn.setFixedWidth(70)
+        clear_btn.setFixedHeight(24)
         clear_btn.clicked.connect(self._clear_filters)
         content_layout.addWidget(clear_btn)
 
@@ -409,6 +419,8 @@ class DataTableView(QWidget):
         # 编辑状态
         self._diff_tracker = DiffTracker()
         self._original_data: Dict[int, Dict[str, Any]] = {}  # 原始数据备份 {row: data}
+        self._worker_manager = get_worker_manager()
+        self._current_worker: Optional[ProcessWorker] = None
 
         self._init_ui()
         self._load_primary_key()
@@ -537,9 +549,33 @@ class DataTableView(QWidget):
             # 构建 SQL
             sql = self._build_query()
 
-            # 执行查询
-            result, row_count, message = self._db_connection.execute_query(sql)
+            # 获取连接配置
+            config_dict = self._db_connection.config.to_dict() if self._db_connection.config else {}
 
+            # 使用多进程执行查询
+            task_id = f"load_data_{self._database}_{self._table}_{id(self)}"
+            self._current_worker = self._worker_manager.start_process_query(
+                task_id=task_id,
+                query_type="query",
+                sql=sql,
+                config_dict=config_dict,
+            )
+
+            # 连接信号
+            self._current_worker.result_ready.connect(self._on_data_loaded)
+            self._current_worker.error_occurred.connect(self._on_data_load_error)
+            self._current_worker.finished.connect(self._on_data_load_finished)
+
+        except Exception as e:
+            logger.error(f"启动数据加载失败: {e}")
+            QMessageBox.critical(self, "错误", f"启动数据加载失败:\n{e}")
+            self._is_loading = False
+            self._loading_label.hide()
+            self._table_view.set_loading(False)
+
+    def _on_data_loaded(self, task_id: str, result: Any, row_count: int, message: str):
+        """数据加载完成回调"""
+        try:
             if result is not None:
                 # 首次加载时获取列名
                 if not self._columns and result:
@@ -561,13 +597,19 @@ class DataTableView(QWidget):
                 logger.info(f"加载了 {row_count} 行数据")
 
         except Exception as e:
-            logger.error(f"加载数据失败: {e}")
-            QMessageBox.critical(self, "错误", f"加载数据失败:\n{e}")
+            logger.error(f"处理数据加载结果失败: {e}")
+            QMessageBox.critical(self, "错误", f"处理数据失败:\n{e}")
 
-        finally:
-            self._is_loading = False
-            self._loading_label.hide()
-            self._table_view.set_loading(False)
+    def _on_data_load_error(self, task_id: str, error: str):
+        """数据加载错误回调"""
+        logger.error(f"数据加载失败: {error}")
+        QMessageBox.critical(self, "错误", f"加载数据失败:\n{error}")
+
+    def _on_data_load_finished(self, task_id: str):
+        """数据加载完成回调"""
+        self._is_loading = False
+        self._loading_label.hide()
+        self._table_view.set_loading(False)
 
     def _build_query(self) -> str:
         """构建查询 SQL"""
