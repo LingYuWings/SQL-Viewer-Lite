@@ -191,6 +191,65 @@
   - [ ] 连接配置分组管理
   - [ ] 最近使用的连接优先显示
 
+### 多数据库支持
+
+**MySQL（已完成）**
+
+- [x] PyMySQL 驱动集成
+- [x] 连接测试与认证
+- [x] 数据库/表浏览
+- [x] SQL 执行与编辑
+- [x] 事务支持
+
+**PostgreSQL**
+
+- [ ] 实现 `core/drivers/postgresql.py` PostgreSQL 适配器
+  - [ ] 继承 `DatabaseDriver` 抽象基类
+  - [ ] 实现 `connect()`, `disconnect()`, `execute_query()` 等方法
+  - [ ] 处理 PostgreSQL 特有语法（如 `RETURNING`, `ILIKE`）
+- [ ] 添加 psycopg2 依赖到 requirements.txt
+- [ ] 更新登录窗口支持 PostgreSQL 类型选择
+- [ ] 更新 ConnectionConfig 支持 PostgreSQL 配置（如 database, schema）
+- [ ] 测试 PostgreSQL 连接与基本查询
+
+**SQLite**
+
+- [ ] 实现 `core/drivers/sqlite.py` SQLite 适配器
+  - [ ] 继承 `DatabaseDriver` 抽象基类
+  - [ ] 实现文件路径选择（无需主机/端口/用户名）
+  - [ ] 处理 SQLite 特有语法（如 `AUTOINCREMENT`, `WITHOUT ROWID`）
+- [ ] 更新登录窗口支持 SQLite 文件选择
+- [ ] 实现 SQLite 数据库创建与打开
+- [ ] 测试 SQLite 连接与基本查询
+
+**SQL Server**
+
+- [ ] 实现 `core/drivers/mssql.py` SQL Server 适配器
+  - [ ] 继承 `DatabaseDriver` 抽象基类
+  - [ ] 处理 SQL Server 特有语法（如 `TOP`, `IDENTITY`）
+- [ ] 添加 pymssql 依赖到 requirements.txt
+- [ ] 更新登录窗口支持 SQL Server 类型选择
+- [ ] 测试 SQL Server 连接与基本查询
+
+**通用功能**
+
+- [ ] 实现 `core/drivers/base.py` 抽象基类
+  - [ ] 定义统一的数据库操作接口
+  - [ ] 定义连接配置接口
+  - [ ] 定义 SQL 方言差异处理
+- [ ] 更新 `core/db_connection.py` 支持驱动自动选择
+  - [ ] 根据连接配置自动选择数据库驱动
+  - [ ] 统一的连接管理接口
+- [ ] 更新 `models/connection.py` 支持数据库类型字段
+  - [ ] 添加 `db_type` 字段（mysql/postgresql/sqlite/mssql）
+  - [ ] 不同数据库类型的配置验证
+- [ ] 更新 SQL 执行器支持方言切换
+  - [ ] 根据当前连接数据库类型调整 SQL 语法
+  - [ ] 支持不同数据库的 LIMIT/OFFSET 语法差异
+- [ ] 功能降级处理
+  - [ ] 某些数据库不支持的功能优雅降级
+  - [ ] 显示功能支持状态提示
+
 ---
 
 ## 待开发功能

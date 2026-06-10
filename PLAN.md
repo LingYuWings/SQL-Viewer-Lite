@@ -140,6 +140,61 @@
 - `ui/sql_editor.py` — SQL 执行器支持多连接
 - `utils/config_manager.py` — 多连接配置存储
 
+### 多数据库支持
+
+**目标**：支持多种数据库系统，不仅限于 MySQL。
+
+**支持的数据库**：
+
+| 数据库 | 驱动 | 优先级 | 状态 |
+|--------|------|--------|------|
+| MySQL | PyMySQL | P0 | ✅ 已支持 |
+| PostgreSQL | psycopg2 | P1 | ⬜ 待开发 |
+| SQLite | sqlite3 (内置) | P1 | ⬜ 待开发 |
+| SQL Server | pymssql | P2 | ⬜ 待开发 |
+| Oracle | oracledb | P2 | ⬜ 待开发 |
+
+**功能设计**：
+
+- 统一连接接口：抽象数据库连接层，支持多种后端
+- 驱动自动检测：根据连接配置自动选择合适的驱动
+- SQL 方言适配：不同数据库的 SQL 语法差异处理
+- 功能降级：某些数据库不支持的功能优雅降级
+- 连接测试：统一的连接测试接口
+
+**实现方案**：
+
+- 设计 `DatabaseDriver` 抽象基类
+- 实现各数据库的具体驱动适配器
+- 修改 `ConnectionConfig` 支持数据库类型字段
+- 更新登录窗口支持数据库类型选择
+- SQL 执行器支持方言切换
+
+**架构设计**：
+
+```
+core/
+├── db_connection.py      # 统一连接管理
+├── drivers/              # 数据库驱动适配器
+│   ├── __init__.py
+│   ├── base.py           # 抽象基类 DatabaseDriver
+│   ├── mysql.py          # MySQL 驱动
+│   ├── postgresql.py     # PostgreSQL 驱动
+│   ├── sqlite.py         # SQLite 驱动
+│   └── mssql.py          # SQL Server 驱动
+└── db_worker.py          # 多进程查询（已支持）
+```
+
+**涉及文件**：
+
+- `core/drivers/base.py` — 抽象基类
+- `core/drivers/mysql.py` — MySQL 适配器
+- `core/drivers/postgresql.py` — PostgreSQL 适配器
+- `core/drivers/sqlite.py` — SQLite 适配器
+- `core/db_connection.py` — 连接管理改造
+- `models/connection.py` — 连接配置扩展
+- `ui/login_window.py` — 数据库类型选择
+
 ---
 
 ## 风险与应对
@@ -165,4 +220,5 @@
 | `v0.4.0` | 第二阶段 M8-M12 | UI 美化 + 功能增强 |
 | `v0.5.0` | 附加优化 | 虚拟滚动 + 快捷键 + 多进程 |
 | `v0.6.0` | 多连接管理 | 多连接并行 + 连接切换 + 跨库查询 |
+| `v0.7.0` | 多数据库支持 | PostgreSQL + SQLite + SQL Server |
 | `v1.0.0` | 第三阶段 M13-M15 | 正式发布 |
