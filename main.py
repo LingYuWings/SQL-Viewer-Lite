@@ -30,7 +30,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QProgressBar,
 )
-from PyQt5.QtCore import Qt, QSize, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, pyqtSignal, QEvent
 from PyQt5.QtGui import QIcon, QFont, QPixmap, QPainter, QColor
 
 from sql_viewer_lite.models.connection import ConnectionConfig
@@ -71,7 +71,7 @@ class DatabaseTreeWidget(QWidget):
     """
     数据库树形控件
     
-    显示数据库和表的层级结构，支持搜索过滤。
+    显示数据库和表的层级结构，类似命令行文件树风格。
     """
     
     # 信号：表被选中
@@ -82,33 +82,7 @@ class DatabaseTreeWidget(QWidget):
         self._db_connection = get_db_connection()
         self._all_items: List[Dict] = []  # 存储所有项目用于过滤
         
-        # 创建图标
-        self._db_icon = self._create_colored_icon("#4FC3F7", "🗄")  # 浅蓝色
-        self._table_icon = self._create_colored_icon("#81C784", "📋")  # 浅绿色
-        
         self._init_ui()
-    
-    @staticmethod
-    def _create_colored_icon(color: str, emoji: str) -> QIcon:
-        """创建带颜色的图标"""
-        pixmap = QPixmap(16, 16)
-        pixmap.fill(QColor(0, 0, 0, 0))  # 透明背景
-        
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        
-        # 绘制圆形背景
-        painter.setBrush(QColor(color))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(1, 1, 14, 14)
-        
-        # 绘制中心点
-        painter.setBrush(QColor(255, 255, 255))
-        painter.drawEllipse(5, 5, 6, 6)
-        
-        painter.end()
-        
-        return QIcon(pixmap)
     
     def _init_ui(self):
         """初始化界面"""
@@ -124,10 +98,24 @@ class DatabaseTreeWidget(QWidget):
         
         # 树形控件
         self._tree = QTreeWidget()
-        self._tree.setHeaderLabel("数据库")
+        self._tree.setHeaderHidden(True)
         self._tree.setAnimated(True)
+        self._tree.setIndentation(20)
+        self._tree.setRootIsDecorated(True)
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._tree.itemExpanded.connect(self._on_item_expanded)
+        
+        # 设置样式：显示树线
+        self._tree.setStyleSheet("""
+            QTreeWidget {
+                font-family: "Consolas", "Cascadia Code", "Courier New", monospace;
+                font-size: 12px;
+            }
+            QTreeWidget::item {
+                padding: 2px 0;
+            }
+        """)
+        
         layout.addWidget(self._tree)
     
     def load_databases(self, databases: List[str]):
@@ -140,16 +128,18 @@ class DatabaseTreeWidget(QWidget):
         self._tree.clear()
         self._all_items.clear()
         
-        for db_name in databases:
+        for i, db_name in enumerate(databases):
+            is_last = (i == len(databases) - 1)
+            prefix = "└── " if is_last else "├── "
+            
             # 创建数据库节点
             db_item = QTreeWidgetItem(self._tree)
-            db_item.setText(0, db_name)
-            db_item.setIcon(0, self._db_icon)
+            db_item.setText(0, f"{prefix}📁 {db_name}")
             db_item.setData(0, Qt.UserRole, {"type": "database", "name": db_name})
             
             # 添加占位子节点（懒加载）
             placeholder = QTreeWidgetItem(db_item)
-            placeholder.setText(0, "加载中...")
+            placeholder.setText(0, "    ⏳ 加载中...")
             placeholder.setData(0, Qt.UserRole, {"type": "placeholder"})
             
             self._all_items.append({
@@ -184,15 +174,18 @@ class DatabaseTreeWidget(QWidget):
             # 获取表列表
             tables = self._db_connection.get_tables(database)
             
-            for table_info in tables:
+            for i, table_info in enumerate(tables):
                 table_name = table_info["name"]
                 rows = table_info.get("rows", 0)
                 engine = table_info.get("engine", "")
+                is_last = (i == len(tables) - 1)
+                
+                # 构建树线前缀
+                prefix = "    └── " if is_last else "    ├── "
                 
                 # 创建表节点
                 table_item = QTreeWidgetItem(db_item)
-                table_item.setText(0, table_name)
-                table_item.setIcon(0, self._table_icon)
+                table_item.setText(0, f"{prefix}📋 {table_name}")
                 table_item.setData(0, Qt.UserRole, {
                     "type": "table",
                     "database": database,
@@ -211,13 +204,19 @@ class DatabaseTreeWidget(QWidget):
                     "item": table_item,
                 })
             
+            # 添加统计信息
+            count_item = QTreeWidgetItem(db_item)
+            count_item.setText(0, f"    📊 共 {len(tables)} 个表")
+            count_item.setData(0, Qt.UserRole, {"type": "info"})
+            count_item.setForeground(0, QColor("#888888"))
+            
             logger.info(f"数据库 {database} 加载了 {len(tables)} 个表")
             
         except Exception as e:
             logger.error(f"加载表列表失败: {e}")
             # 添加错误提示节点
             error_item = QTreeWidgetItem(db_item)
-            error_item.setText(0, f"加载失败: {e}")
+            error_item.setText(0, f"    ❌ 加载失败: {e}")
             error_item.setData(0, Qt.UserRole, {"type": "error"})
     
     def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
