@@ -258,19 +258,24 @@ class QueryCache:
 # 全局实例
 _connection_pool: Optional[ConnectionPool] = None
 _query_cache: Optional[QueryCache] = None
+_singleton_lock = threading.Lock()
 
 
 def get_connection_pool() -> ConnectionPool:
-    """获取连接池单例"""
+    """获取连接池单例（线程安全）"""
     global _connection_pool
     if _connection_pool is None:
-        _connection_pool = ConnectionPool()
+        with _singleton_lock:
+            if _connection_pool is None:
+                _connection_pool = ConnectionPool()
     return _connection_pool
 
 
 def get_query_cache() -> QueryCache:
-    """获取查询缓存单例"""
+    """获取查询缓存单例（线程安全）"""
     global _query_cache
     if _query_cache is None:
-        _query_cache = QueryCache()
+        with _singleton_lock:
+            if _query_cache is None:
+                _query_cache = QueryCache()
     return _query_cache

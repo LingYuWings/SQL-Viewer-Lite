@@ -6,6 +6,7 @@
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -172,8 +173,8 @@ class I18nManager:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     self._settings = json.load(f)
                 self._current_language = self._settings.get("language", "zh_CN")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"加载国际化设置失败: {e}")
 
     def _save_settings(self):
         """保存设置"""
@@ -226,13 +227,16 @@ class I18nManager:
 
 # 全局单例
 _i18n_manager: Optional[I18nManager] = None
+_singleton_lock = threading.Lock()
 
 
 def get_i18n_manager() -> I18nManager:
-    """获取国际化管理器单例"""
+    """获取国际化管理器单例（线程安全）"""
     global _i18n_manager
     if _i18n_manager is None:
-        _i18n_manager = I18nManager()
+        with _singleton_lock:
+            if _i18n_manager is None:
+                _i18n_manager = I18nManager()
     return _i18n_manager
 
 

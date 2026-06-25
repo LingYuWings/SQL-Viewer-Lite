@@ -1,18 +1,18 @@
 """
 加密工具模块 - 密码加密/解密
 
-使用 AES-CBC 模式加密密码，密钥存储在用户目录下。
+使用 AES-GCM 模式加密密码（提供认证加密，防篡改），密钥存储在用户目录下。
 """
 
 import os
 import json
 import base64
 import logging
+import threading
 from pathlib import Path
 from typing import Optional
 
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
 from Crypto.Random import get_random_bytes
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class EncryptionManager:
     """
     加密管理器
 
-    使用 AES-CBC 模式加密密码，密钥存储在本地文件中。
+    使用 AES-GCM 模式加密密码（认证加密，防篡改），密钥存储在本地文件中。
     """
 
     def __init__(self):
@@ -56,6 +56,11 @@ class EncryptionManager:
             try:
                 with open(KEY_FILE, "rb") as f:
                     self._key = f.read()
+                # 确保密钥文件权限安全
+                try:
+                    os.chmod(KEY_FILE, 0o600)
+                except OSError:
+                    pass
                 logger.debug("密钥已加载")
                 return self._key
             except Exception as e:
@@ -67,6 +72,11 @@ class EncryptionManager:
         try:
             with open(KEY_FILE, "wb") as f:
                 f.write(self._key)
+            # 限制密钥文件权限（仅所有者可读写）
+            try:
+                os.chmod(KEY_FILE, 0o600)
+            except OSError:
+                pass
             logger.info("新密钥已生成并保存")
             return self._key
         except Exception as e:
@@ -81,22 +91,20 @@ class EncryptionManager:
             plaintext: 要加密的明文
 
         Returns:
-            Base64 编码的密文（包含 IV）
+            Base64 编码的密文（包含 nonce + tag + ciphertext）
         """
         if not plaintext:
             return ""
 
         try:
             key = self._get_or_create_key()
-            iv = get_random_bytes(16)  # AES 块大小
-            cipher = AES.new(key, AES.MODE_CBC, iv)
+            cipher = AES.new(key, AES.MODE_GCM)
 
-            # 填充并加密
-            padded_data = pad(plaintext.encode("utf-8"), AES.block_size)
-            ciphertext = cipher.encrypt(padded_data)
+            # 加密并获取认证标签
+            ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
 
-            # 组合 IV + 密文，然后 Base64 编码
-            encrypted = base64.b64encode(iv + ciphertext).decode("utf-8")
+            # 组合 nonce + tag + 密文，然后 Base64 编码
+            encrypted = base64.b64encode(cipher.nonce + tag + ciphertext).decode("utf-8")
             logger.debug("加密成功")
             return encrypted
         except Exception as e:
@@ -108,10 +116,13 @@ class EncryptionManager:
         解密密文
 
         Args:
-            encrypted: Base64 编码的密文（包含 IV）
+            encrypted: Base64 编码的密文（包含 nonce + tag + ciphertext）
 
         Returns:
             解密后的明文
+
+        Raises:
+            EncryptionError: 解密失败或密文被篡改
         """
         if not encrypted:
             return ""
@@ -122,18 +133,19 @@ class EncryptionManager:
             # Base64 解码
             raw_data = base64.b64decode(encrypted)
 
-            # 提取 IV 和密文
-            iv = raw_data[:16]
-            ciphertext = raw_data[16:]
+            # 提取 nonce、tag 和密文
+            nonce = raw_data[:16]
+            tag = raw_data[16:32]
+            ciphertext = raw_data[32:]
 
-            # 解密
-            cipher = AES.new(key, AES.MODE_CBC, iv)
-            padded_data = cipher.decrypt(ciphertext)
-
-            # 去除填充
-            plaintext = unpad(padded_data, AES.block_size).decode("utf-8")
+            # 解密并验证认证标签
+            cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+            plaintext = cipher.decrypt_and_verify(ciphertext, tag).decode("utf-8")
             logger.debug("解密成功")
             return plaintext
+        except (ValueError, KeyError) as e:
+            logger.error(f"解密失败（密文可能被篡改）: {e}")
+            raise EncryptionError(f"解密失败（密文可能被篡改）: {e}")
         except Exception as e:
             logger.error(f"解密失败: {e}")
             raise EncryptionError(f"解密失败: {e}")
@@ -141,13 +153,16 @@ class EncryptionManager:
 
 # 全局单例
 _encryption_manager: Optional[EncryptionManager] = None
+_singleton_lock = threading.Lock()
 
 
 def get_encryption_manager() -> EncryptionManager:
-    """获取加密管理器单例"""
+    """获取加密管理器单例（线程安全）"""
     global _encryption_manager
     if _encryption_manager is None:
-        _encryption_manager = EncryptionManager()
+        with _singleton_lock:
+            if _encryption_manager is None:
+                _encryption_manager = EncryptionManager()
     return _encryption_manager
 
 

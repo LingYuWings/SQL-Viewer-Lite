@@ -7,9 +7,12 @@
 import json
 import logging
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any
+from typing import List, Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+# 支持的数据库类型
+SUPPORTED_DB_TYPES = ["mysql", "postgresql", "sqlite", "mssql"]
 
 
 @dataclass
@@ -18,12 +21,14 @@ class ConnectionConfig:
     数据库连接配置
 
     Attributes:
+        db_type: 数据库类型（mysql, postgresql, sqlite, mssql）
         host: 主机地址
         port: 端口号
         user: 用户名
         password: 密码（明文或加密后的）
         database: 数据库名（可选）
         alias: 连接别名（可选）
+        file_path: SQLite 数据库文件路径（可选）
         ssh_host: SSH 主机（可选）
         ssh_port: SSH 端口（可选）
         ssh_user: SSH 用户名（可选）
@@ -31,12 +36,16 @@ class ConnectionConfig:
         ssh_key_file: SSH 密钥文件路径（可选）
     """
 
+    db_type: str = "mysql"  # 数据库类型，默认 MySQL（向后兼容）
     host: str = "localhost"
     port: int = 3306
     user: str = "root"
     password: str = ""
     database: Optional[str] = None
     alias: Optional[str] = None
+
+    # SQLite 配置
+    file_path: Optional[str] = None  # SQLite 数据库文件路径
 
     # SSH 隧道配置（Phase 2）
     ssh_host: Optional[str] = None
@@ -50,6 +59,9 @@ class ConnectionConfig:
         """显示名称（用于 UI 展示）"""
         if self.alias:
             return self.alias
+        if self.db_type == "sqlite" and self.file_path:
+            from pathlib import Path
+            return Path(self.file_path).name
         return f"{self.user}@{self.host}:{self.port}"
 
     @property
@@ -83,7 +95,7 @@ class ConnectionConfig:
         """创建副本"""
         return ConnectionConfig.from_dict(self.to_dict())
 
-    def validate(self) -> list[str]:
+    def validate(self) -> List[str]:
         """
         验证配置
 
@@ -92,14 +104,24 @@ class ConnectionConfig:
         """
         errors = []
 
-        if not self.host:
-            errors.append("主机地址不能为空")
+        # 验证数据库类型
+        if self.db_type not in SUPPORTED_DB_TYPES:
+            errors.append(f"不支持的数据库类型: {self.db_type}，支持的类型: {', '.join(SUPPORTED_DB_TYPES)}")
 
-        if not (1 <= self.port <= 65535):
-            errors.append(f"端口号无效: {self.port}")
+        # SQLite 验证文件路径
+        if self.db_type == "sqlite":
+            if not self.file_path:
+                errors.append("SQLite 数据库文件路径不能为空")
+        else:
+            # MySQL/PostgreSQL/SQL Server 验证
+            if not self.host:
+                errors.append("主机地址不能为空")
 
-        if not self.user:
-            errors.append("用户名不能为空")
+            if not (1 <= self.port <= 65535):
+                errors.append(f"端口号无效: {self.port}")
+
+            if not self.user:
+                errors.append("用户名不能为空")
 
         if self.ssh_host and not self.ssh_user:
             errors.append("SSH 用户名不能为空")

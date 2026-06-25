@@ -546,8 +546,8 @@ class DataTableView(QWidget):
         self._table_view.set_loading(True)
 
         try:
-            # 构建 SQL
-            sql = self._build_query()
+            # 构建 SQL（参数化）
+            sql, params = self._build_query()
 
             # 获取连接配置
             config_dict = self._db_connection.config.to_dict() if self._db_connection.config else {}
@@ -558,6 +558,7 @@ class DataTableView(QWidget):
                 task_id=task_id,
                 query_type="query",
                 sql=sql,
+                params=params,
                 config_dict=config_dict,
             )
 
@@ -611,13 +612,18 @@ class DataTableView(QWidget):
         self._loading_label.hide()
         self._table_view.set_loading(False)
 
-    def _build_query(self) -> str:
-        """构建查询 SQL"""
+    def _build_query(self) -> Tuple[str, tuple]:
+        """构建查询 SQL（参数化，防注入）
+
+        Returns:
+            (sql_template, params_tuple)
+        """
         # 基础查询
         columns = (
             ", ".join([f"`{col}`" for col in self._columns]) if self._columns else "*"
         )
         sql = f"SELECT {columns} FROM `{self._database}`.`{self._table}`"
+        params: List[Any] = []
 
         # 添加筛选条件
         if self._filter_widget:
@@ -625,7 +631,8 @@ class DataTableView(QWidget):
             if filters:
                 conditions = []
                 for col, keyword in filters.items():
-                    conditions.append(f"`{col}` LIKE '%{keyword}%'")
+                    conditions.append(f"`{col}` LIKE %s")
+                    params.append(f"%{keyword}%")
                 sql += " WHERE " + " AND ".join(conditions)
 
         # 添加排序
@@ -637,7 +644,7 @@ class DataTableView(QWidget):
         limit = self._pagination.get_page_size()
         sql += f" LIMIT {limit} OFFSET {offset}"
 
-        return sql
+        return sql, tuple(params)
 
     def _setup_columns(self):
         """设置表格列"""
@@ -796,12 +803,12 @@ class DataTableView(QWidget):
             # 处理删除
             for row_idx in self._diff_tracker.deleted_rows:
                 if row_idx in self._original_data:
-                    where_clause = self._build_where_clause(
+                    where_clause, where_params = self._build_where_clause(
                         self._original_data[row_idx]
                     )
                     sql = f"DELETE FROM `{self._database}`.`{self._table}` WHERE {where_clause}"
                     sql_statements.append(sql)
-                    self._db_connection.execute_query(sql, fetch=False)
+                    self._db_connection.execute_query(sql, tuple(where_params), fetch=False)
 
             # 处理修改
             processed_rows = set()
@@ -815,18 +822,21 @@ class DataTableView(QWidget):
                 row_diffs = self._diff_tracker.get_modifications_for_row(row)
                 if row_diffs and row in self._original_data:
                     set_clauses = []
+                    set_params: List[Any] = []
                     for d in row_diffs:
                         if d.new_value == "NULL":
                             set_clauses.append(f"`{d.column}` = NULL")
                         elif d.new_value == "":
                             set_clauses.append(f"`{d.column}` = ''")
                         else:
-                            set_clauses.append(f"`{d.column}` = '{d.new_value}'")
+                            set_clauses.append(f"`{d.column}` = %s")
+                            set_params.append(d.new_value)
 
-                    where_clause = self._build_where_clause(self._original_data[row])
+                    where_clause, where_params = self._build_where_clause(self._original_data[row])
+                    all_params = set_params + where_params
                     sql = f"UPDATE `{self._database}`.`{self._table}` SET {', '.join(set_clauses)} WHERE {where_clause}"
                     sql_statements.append(sql)
-                    self._db_connection.execute_query(sql, fetch=False)
+                    self._db_connection.execute_query(sql, tuple(all_params), fetch=False)
                     processed_rows.add(row)
 
             # 处理新增
@@ -844,10 +854,11 @@ class DataTableView(QWidget):
 
                     if values:
                         columns_str = ", ".join([f"`{k}`" for k in values.keys()])
-                        values_str = ", ".join([f"'{v}'" for v in values.values()])
-                        sql = f"INSERT INTO `{self._database}`.`{self._table}` ({columns_str}) VALUES ({values_str})"
+                        placeholders = ", ".join(["%s"] * len(values))
+                        insert_params = list(values.values())
+                        sql = f"INSERT INTO `{self._database}`.`{self._table}` ({columns_str}) VALUES ({placeholders})"
                         sql_statements.append(sql)
-                        self._db_connection.execute_query(sql, fetch=False)
+                        self._db_connection.execute_query(sql, tuple(insert_params), fetch=False)
 
             # 提交事务
             self._db_connection.commit()
@@ -876,13 +887,20 @@ class DataTableView(QWidget):
             )
             logger.error(f"提交失败: {e}")
 
-    def _build_where_clause(self, row_data: Dict[str, Any]) -> str:
-        """构建 WHERE 子句（使用主键或所有列）"""
+    def _build_where_clause(self, row_data: Dict[str, Any]) -> Tuple[str, List[Any]]:
+        """构建 WHERE 子句（参数化，防注入）
+
+        Returns:
+            (where_clause, params_list)
+        """
+        params: List[Any] = []
+
         if self._primary_key and self._primary_key in row_data:
             value = row_data[self._primary_key]
             if value is None:
-                return f"`{self._primary_key}` IS NULL"
-            return f"`{self._primary_key}` = '{value}'"
+                return f"`{self._primary_key}` IS NULL", params
+            params.append(value)
+            return f"`{self._primary_key}` = %s", params
 
         # 没有主键时使用所有列
         conditions = []
@@ -890,8 +908,9 @@ class DataTableView(QWidget):
             if value is None:
                 conditions.append(f"`{col}` IS NULL")
             else:
-                conditions.append(f"`{col}` = '{value}'")
-        return " AND ".join(conditions)
+                conditions.append(f"`{col}` = %s")
+                params.append(value)
+        return " AND ".join(conditions), params
 
     def _on_rollback(self):
         """撤销更改"""

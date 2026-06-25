@@ -14,7 +14,7 @@ import pytest
 
 from sql_viewer_lite.core.db_connection import (
     DatabaseConnection,
-    ConnectionError,
+    DatabaseConnectionError,
     QueryError,
     ConnectionState,
 )
@@ -23,8 +23,8 @@ from sql_viewer_lite.models.connection import ConnectionConfig
 # 测试数据库配置
 TEST_DB_HOST = os.environ.get("TEST_DB_HOST", "localhost")
 TEST_DB_PORT = int(os.environ.get("TEST_DB_PORT", "3306"))
-TEST_DB_USER = os.environ.get("TEST_DB_USER", "Junco")
-TEST_DB_PASSWORD = os.environ.get("TEST_DB_PASSWORD", "QWEqwe123")
+TEST_DB_USER = os.environ.get("TEST_DB_USER", "root")
+TEST_DB_PASSWORD = os.environ.get("TEST_DB_PASSWORD", "root")
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ class TestDatabaseConnection:
             password="invalid_password",
         )
 
-        with pytest.raises(ConnectionError):
+        with pytest.raises(DatabaseConnectionError):
             db_connection.connect(bad_config)
 
         assert db_connection.is_connected is False
@@ -145,7 +145,7 @@ class TestDatabaseConnection:
 
     def test_execute_query_not_connected(self, db_connection):
         """测试未连接时执行查询"""
-        with pytest.raises(ConnectionError):
+        with pytest.raises(DatabaseConnectionError):
             db_connection.execute_query("SELECT 1")
 
     def test_begin_commit_transaction(self, db_connection, db_config):

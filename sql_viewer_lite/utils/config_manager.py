@@ -5,8 +5,10 @@
 密码使用 AES 加密存储。
 """
 
+import os
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -84,6 +86,11 @@ class ConfigManager:
         try:
             with open(self._config_file, "w", encoding="utf-8") as f:
                 json.dump(configs, f, ensure_ascii=False, indent=2)
+            # 限制配置文件权限（仅所有者可读写）
+            try:
+                os.chmod(self._config_file, 0o600)
+            except OSError:
+                pass
             logger.debug(f"配置已保存到 {self._config_file}")
         except Exception as e:
             logger.error(f"保存配置文件失败: {e}")
@@ -208,11 +215,14 @@ class ConfigManager:
 
 # 全局单例
 _config_manager: Optional[ConfigManager] = None
+_singleton_lock = threading.Lock()
 
 
 def get_config_manager() -> ConfigManager:
-    """获取配置管理器单例"""
+    """获取配置管理器单例（线程安全）"""
     global _config_manager
     if _config_manager is None:
-        _config_manager = ConfigManager()
+        with _singleton_lock:
+            if _config_manager is None:
+                _config_manager = ConfigManager()
     return _config_manager

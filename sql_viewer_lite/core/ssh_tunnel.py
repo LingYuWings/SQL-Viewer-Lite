@@ -99,7 +99,9 @@ class SSHTunnel:
         try:
             # 创建 SSH 客户端
             self._ssh_client = paramiko.SSHClient()
-            self._ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # 优先使用系统 known_hosts，拒绝未知主机（防 MITM）
+            self._ssh_client.load_system_host_keys()
+            self._ssh_client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
             # 连接 SSH
             logger.info(f"连接 SSH: {self._ssh_user}@{self._ssh_host}:{self._ssh_port}")

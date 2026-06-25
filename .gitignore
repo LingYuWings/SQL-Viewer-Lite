@@ -43,6 +43,19 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Node.js (if using npm for tooling)
+node_modules/
+package-lock.json
+
+# OMO (local tool)
+.omo/
+
+# Vibe development markdown
+SPEC.md
+AGENTS.md
+PLAN.md
+TASK.md
+
 # Temporary files
 *.tmp
 *.bak

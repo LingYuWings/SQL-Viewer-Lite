@@ -6,6 +6,7 @@
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, Optional, Callable
 from dataclasses import dataclass, field
@@ -347,13 +348,16 @@ class ShortcutManager(QObject):
 
 # 全局快捷键管理器实例
 _shortcut_manager: Optional[ShortcutManager] = None
+_singleton_lock = threading.Lock()
 
 
 def get_shortcut_manager() -> ShortcutManager:
-    """获取快捷键管理器单例"""
+    """获取快捷键管理器单例（线程安全）"""
     global _shortcut_manager
     if _shortcut_manager is None:
-        _shortcut_manager = ShortcutManager()
+        with _singleton_lock:
+            if _shortcut_manager is None:
+                _shortcut_manager = ShortcutManager()
     return _shortcut_manager
 
 

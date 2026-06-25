@@ -8,6 +8,7 @@
 
 import logging
 import multiprocessing
+import threading
 from typing import Optional, List, Dict, Any, Tuple
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, QTimer
@@ -341,8 +342,9 @@ class ProcessWorker(QObject):
                 self._cleanup()
                 return
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"轮询结果队列异常: {e}")
+            self._cleanup()
 
     def _cleanup(self):
         """清理资源"""
@@ -507,11 +509,14 @@ class WorkerManager(QObject):
 
 # 全局工作者管理器
 _worker_manager: Optional[WorkerManager] = None
+_singleton_lock = threading.Lock()
 
 
 def get_worker_manager() -> WorkerManager:
-    """获取工作者管理器单例"""
+    """获取工作者管理器单例（线程安全）"""
     global _worker_manager
     if _worker_manager is None:
-        _worker_manager = WorkerManager()
+        with _singleton_lock:
+            if _worker_manager is None:
+                _worker_manager = WorkerManager()
     return _worker_manager

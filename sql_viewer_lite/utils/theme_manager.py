@@ -6,6 +6,7 @@
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -141,11 +142,14 @@ class ThemeManager(QObject):
 
 # 全局单例
 _theme_manager: Optional[ThemeManager] = None
+_singleton_lock = threading.Lock()
 
 
 def get_theme_manager() -> ThemeManager:
-    """获取主题管理器单例"""
+    """获取主题管理器单例（线程安全）"""
     global _theme_manager
     if _theme_manager is None:
-        _theme_manager = ThemeManager()
+        with _singleton_lock:
+            if _theme_manager is None:
+                _theme_manager = ThemeManager()
     return _theme_manager

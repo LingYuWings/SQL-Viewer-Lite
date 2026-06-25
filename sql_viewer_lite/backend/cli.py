@@ -15,7 +15,7 @@ from pathlib import Path
 
 from sql_viewer_lite.core.db_connection import (
     DatabaseConnection,
-    ConnectionError,
+    DatabaseConnectionError,
     QueryError,
 )
 from sql_viewer_lite.models.connection import ConnectionConfig
@@ -61,7 +61,7 @@ class SQLViewerCLI:
         try:
             self._db_connection.connect(self._config)
             print(f"已连接到 {user}@{host}:{port}")
-        except ConnectionError as e:
+        except DatabaseConnectionError as e:
             raise CLIError(f"连接失败: {e}")
 
     def disconnect(self):
@@ -239,7 +239,9 @@ class SQLViewerCLI:
                     if value is None:
                         values.append("NULL")
                     else:
-                        values.append(f"'{value}'")
+                        # 转义单引号防 SQL 注入
+                        escaped = str(value).replace("'", "''")
+                        values.append(f"'{escaped}'")
 
                 columns_str = ", ".join([f"`{col}`" for col in columns])
                 values_str = ", ".join(values)

@@ -1,22 +1,21 @@
 """
 数据库连接管理模块
 
-封装 PyMySQL 连接操作，提供连接测试、数据库列表、表列表等功能。
+提供统一的数据库连接管理，支持多数据库驱动。
 """
 
 import logging
+import threading
 from typing import Optional, List, Tuple, Any, Dict
 
-import pymysql
-from pymysql.cursors import DictCursor
-
 from sql_viewer_lite.models.connection import ConnectionConfig
+from sql_viewer_lite.core.drivers import get_driver, DatabaseDriver, TableInfo, ColumnInfo
 
 logger = logging.getLogger(__name__)
 
 
-class ConnectionError(Exception):
-    """连接错误"""
+class DatabaseConnectionError(Exception):
+    """数据库连接错误"""
 
     pass
 
@@ -40,11 +39,11 @@ class DatabaseConnection:
     """
     数据库连接管理器
 
-    封装 PyMySQL 连接操作，提供连接管理、查询执行等功能。
+    通过驱动抽象层管理数据库连接，支持多数据库。
     """
 
     def __init__(self):
-        self._connection: Optional[pymysql.Connection] = None
+        self._driver: Optional[DatabaseDriver] = None
         self._config: Optional[ConnectionConfig] = None
         self._state: str = ConnectionState.DISCONNECTED
         self._last_error: Optional[str] = None
@@ -57,7 +56,7 @@ class DatabaseConnection:
     @property
     def is_connected(self) -> bool:
         """是否已连接"""
-        return self._state == ConnectionState.CONNECTED
+        return self._state == ConnectionState.CONNECTED and self._driver is not None
 
     @property
     def config(self) -> Optional[ConnectionConfig]:
@@ -68,6 +67,11 @@ class DatabaseConnection:
     def last_error(self) -> Optional[str]:
         """获取最后的错误信息"""
         return self._last_error
+
+    @property
+    def db_type(self) -> Optional[str]:
+        """获取当前数据库类型"""
+        return self._config.db_type if self._config else None
 
     def connect(self, config: ConnectionConfig) -> bool:
         """
@@ -80,7 +84,7 @@ class DatabaseConnection:
             是否连接成功
 
         Raises:
-            ConnectionError: 连接失败时抛出
+            DatabaseConnectionError: 连接失败时抛出
         """
         # 断开现有连接
         self.disconnect()
@@ -90,48 +94,36 @@ class DatabaseConnection:
         self._last_error = None
 
         try:
-            logger.info(f"正在连接: {config.user}@{config.host}:{config.port}")
+            logger.info(f"正在连接: {config.display_name} (类型: {config.db_type})")
 
-            self._connection = pymysql.connect(
-                host=config.host,
-                port=config.port,
-                user=config.user,
-                password=config.password,
-                database=config.database,
-                charset="utf8mb4",
-                cursorclass=DictCursor,
-                connect_timeout=10,
-                autocommit=True,
-            )
+            # 获取对应数据库驱动
+            self._driver = get_driver(config.db_type)
+
+            # 建立连接
+            self._driver.connect(config)
 
             self._state = ConnectionState.CONNECTED
             logger.info("数据库连接成功")
             return True
 
-        except pymysql.Error as e:
+        except Exception as e:
             error_msg = f"连接失败: {e}"
             logger.error(error_msg)
             self._state = ConnectionState.ERROR
             self._last_error = error_msg
-            raise ConnectionError(error_msg)
-
-        except Exception as e:
-            error_msg = f"连接异常: {e}"
-            logger.error(error_msg)
-            self._state = ConnectionState.ERROR
-            self._last_error = error_msg
-            raise ConnectionError(error_msg)
+            self._driver = None
+            raise DatabaseConnectionError(error_msg)
 
     def disconnect(self):
         """断开数据库连接"""
-        if self._connection is not None:
+        if self._driver is not None:
             try:
-                self._connection.close()
+                self._driver.disconnect()
                 logger.info("数据库连接已断开")
             except Exception as e:
                 logger.warning(f"断开连接时出错: {e}")
             finally:
-                self._connection = None
+                self._driver = None
                 self._state = ConnectionState.DISCONNECTED
 
     def test_connection(self, config: ConnectionConfig) -> Tuple[bool, str]:
@@ -144,44 +136,33 @@ class DatabaseConnection:
         Returns:
             (是否成功, 消息)
         """
-        test_conn = None
+        test_driver = None
         try:
-            logger.info(f"测试连接: {config.user}@{config.host}:{config.port}")
+            logger.info(f"测试连接: {config.display_name} (类型: {config.db_type})")
 
-            test_conn = pymysql.connect(
-                host=config.host,
-                port=config.port,
-                user=config.user,
-                password=config.password,
-                charset="utf8mb4",
-                cursorclass=DictCursor,
-                connect_timeout=5,
-            )
+            # 获取驱动并连接
+            test_driver = get_driver(config.db_type)
+            test_driver.connect(config)
 
-            # 执行简单查询验证连接
-            with test_conn.cursor() as cursor:
-                cursor.execute("SELECT VERSION() as version")
-                result = cursor.fetchone()
-                version = result.get("version", "未知") if result else "未知"
+            # 测试连接
+            if test_driver.test_connection():
+                message = f"连接成功 ({test_driver.driver_name})"
+                logger.info(message)
+                return True, message
+            else:
+                message = "连接测试失败"
+                logger.warning(message)
+                return False, message
 
-            message = f"连接成功 (MySQL {version})"
-            logger.info(message)
-            return True, message
-
-        except pymysql.Error as e:
+        except Exception as e:
             message = f"连接失败: {e}"
             logger.warning(message)
             return False, message
 
-        except Exception as e:
-            message = f"连接异常: {e}"
-            logger.error(message)
-            return False, message
-
         finally:
-            if test_conn is not None:
+            if test_driver is not None:
                 try:
-                    test_conn.close()
+                    test_driver.disconnect()
                 except Exception:
                     pass
 
@@ -193,24 +174,16 @@ class DatabaseConnection:
             数据库名称列表
 
         Raises:
-            ConnectionError: 未连接时抛出
+            DatabaseConnectionError: 未连接时抛出
             QueryError: 查询失败时抛出
         """
         self._check_connected()
 
         try:
-            with self._connection.cursor() as cursor:
-                cursor.execute("SHOW DATABASES")
-                result = cursor.fetchall()
-                databases = [row["Database"] for row in result]
-
-                # 过滤系统数据库（可选）
-                # databases = [db for db in databases if db not in ("information_schema", "performance_schema", "mysql", "sys")]
-
-                logger.info(f"获取到 {len(databases)} 个数据库")
-                return databases
-
-        except pymysql.Error as e:
+            databases = self._driver.get_databases()
+            logger.info(f"获取到 {len(databases)} 个数据库")
+            return databases
+        except Exception as e:
             error_msg = f"获取数据库列表失败: {e}"
             logger.error(error_msg)
             raise QueryError(error_msg)
@@ -226,43 +199,26 @@ class DatabaseConnection:
             表信息列表，每项包含表名、行数、引擎、字符集等
 
         Raises:
-            ConnectionError: 未连接时抛出
+            DatabaseConnectionError: 未连接时抛出
             QueryError: 查询失败时抛出
         """
         self._check_connected()
 
         try:
-            with self._connection.cursor() as cursor:
-                # 先切换到目标数据库
-                cursor.execute(f"USE `{database}`")
-
-                # 获取表状态信息
-                cursor.execute("SHOW TABLE STATUS")
-                tables = cursor.fetchall()
-
-                result = []
-                for table in tables:
-                    data_length = table.get("Data_length") or 0
-                    index_length = table.get("Index_length") or 0
-                    result.append(
-                        {
-                            "name": table.get("Name", ""),
-                            "rows": table.get("Rows") or 0,
-                            "engine": table.get("Engine") or "",
-                            "charset": (
-                                table.get("Collation", "").split("_")[0]
-                                if table.get("Collation")
-                                else ""
-                            ),
-                            "size": data_length + index_length,
-                            "comment": table.get("Comment") or "",
-                        }
-                    )
-
-                logger.info(f"数据库 {database} 共有 {len(result)} 个表")
-                return result
-
-        except pymysql.Error as e:
+            tables = self._driver.get_tables(database)
+            result = []
+            for table in tables:
+                result.append({
+                    "name": table.name,
+                    "rows": table.rows,
+                    "engine": table.engine,
+                    "charset": table.charset,
+                    "size": table.size,
+                    "comment": table.comment,
+                })
+            logger.info(f"数据库 {database} 共有 {len(result)} 个表")
+            return result
+        except Exception as e:
             error_msg = f"获取表列表失败: {e}"
             logger.error(error_msg)
             raise QueryError(error_msg)
@@ -279,34 +235,27 @@ class DatabaseConnection:
             字段信息列表
 
         Raises:
-            ConnectionError: 未连接时抛出
+            DatabaseConnectionError: 未连接时抛出
             QueryError: 查询失败时抛出
         """
         self._check_connected()
 
         try:
-            with self._connection.cursor() as cursor:
-                cursor.execute(f"SHOW FULL COLUMNS FROM `{database}`.`{table}`")
-                columns = cursor.fetchall()
-
-                result = []
-                for col in columns:
-                    result.append(
-                        {
-                            "name": col.get("Field", ""),
-                            "type": col.get("Type", ""),
-                            "null": col.get("Null", ""),
-                            "key": col.get("Key", ""),
-                            "default": col.get("Default", ""),
-                            "extra": col.get("Extra", ""),
-                            "comment": col.get("Comment", ""),
-                        }
-                    )
-
-                logger.info(f"表 {database}.{table} 共有 {len(result)} 个字段")
-                return result
-
-        except pymysql.Error as e:
+            columns = self._driver.get_columns(database, table)
+            result = []
+            for col in columns:
+                result.append({
+                    "name": col.name,
+                    "type": col.type,
+                    "null": "YES" if col.nullable else "NO",
+                    "key": "PRI" if col.is_primary_key else "",
+                    "default": col.default if col.default is not None else "",
+                    "extra": "",
+                    "comment": col.comment,
+                })
+            logger.info(f"表 {database}.{table} 共有 {len(result)} 个字段")
+            return result
+        except Exception as e:
             error_msg = f"获取表结构失败: {e}"
             logger.error(error_msg)
             raise QueryError(error_msg)
@@ -329,54 +278,24 @@ class DatabaseConnection:
             (结果列表, 影响行数, 执行信息)
 
         Raises:
-            ConnectionError: 未连接时抛出
+            DatabaseConnectionError: 未连接时抛出
             QueryError: 查询失败时抛出
         """
         self._check_connected()
 
         try:
-            with self._connection.cursor() as cursor:
-                logger.debug(f"执行 SQL: {sql}")
-                affected_rows = cursor.execute(sql, params)
+            logger.debug(f"执行 SQL: {sql}")
+            result = self._driver.execute_query(sql, params, fetch)
 
-                if fetch:
-                    result = cursor.fetchall()
-                    message = f"查询成功，返回 {len(result)} 行"
-                    return result, len(result), message
-                else:
-                    message = f"执行成功，影响 {affected_rows} 行"
-                    return None, affected_rows, message
+            if fetch and result is not None:
+                message = f"查询成功，返回 {len(result)} 行"
+                return result, len(result), message
+            else:
+                message = "执行成功"
+                return None, 0, message
 
-        except pymysql.Error as e:
+        except Exception as e:
             error_msg = f"SQL 执行失败: {e}"
-            logger.error(error_msg)
-            raise QueryError(error_msg)
-
-    def execute_many(self, sql: str, params_list: List[tuple]) -> int:
-        """
-        批量执行 SQL
-
-        Args:
-            sql: SQL 语句模板
-            params_list: 参数列表
-
-        Returns:
-            影响的总行数
-
-        Raises:
-            ConnectionError: 未连接时抛出
-            QueryError: 查询失败时抛出
-        """
-        self._check_connected()
-
-        try:
-            with self._connection.cursor() as cursor:
-                affected_rows = cursor.executemany(sql, params_list)
-                logger.debug(f"批量执行完成，影响 {affected_rows} 行")
-                return affected_rows
-
-        except pymysql.Error as e:
-            error_msg = f"批量执行失败: {e}"
             logger.error(error_msg)
             raise QueryError(error_msg)
 
@@ -384,42 +303,45 @@ class DatabaseConnection:
         """开始事务"""
         self._check_connected()
         try:
-            self._connection.begin()
+            self._driver.begin_transaction()
             logger.debug("事务已开始")
-        except pymysql.Error as e:
+        except Exception as e:
             raise QueryError(f"开始事务失败: {e}")
 
     def commit(self):
         """提交事务"""
         self._check_connected()
         try:
-            self._connection.commit()
+            self._driver.commit()
             logger.debug("事务已提交")
-        except pymysql.Error as e:
+        except Exception as e:
             raise QueryError(f"提交事务失败: {e}")
 
     def rollback(self):
         """回滚事务"""
         self._check_connected()
         try:
-            self._connection.rollback()
+            self._driver.rollback()
             logger.debug("事务已回滚")
-        except pymysql.Error as e:
+        except Exception as e:
             raise QueryError(f"回滚事务失败: {e}")
 
     def _check_connected(self):
         """检查是否已连接"""
         if not self.is_connected:
-            raise ConnectionError("数据库未连接")
+            raise DatabaseConnectionError("数据库未连接")
 
 
 # 全局连接实例
 _db_connection: Optional[DatabaseConnection] = None
+_singleton_lock = threading.Lock()
 
 
 def get_db_connection() -> DatabaseConnection:
-    """获取数据库连接单例"""
+    """获取数据库连接单例（线程安全）"""
     global _db_connection
     if _db_connection is None:
-        _db_connection = DatabaseConnection()
+        with _singleton_lock:
+            if _db_connection is None:
+                _db_connection = DatabaseConnection()
     return _db_connection
